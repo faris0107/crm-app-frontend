@@ -1,0 +1,17 @@
+export const Colors = {
+    primary: '#2563EB',
+    secondary: '#64748B',
+    accent: '#F59E0B',
+    background: '#F8FAFC',
+    surface: '#FFFFFF',
+    text: '#1E293B',
+    textLight: '#64748B',
+    success: '#10B981',
+    warning: '#F59E0B',
+    danger: '#EF4444',
+    border: '#E2E8F0',
+    white: '#FFFFFF',
+    black: '#000000',
+    indigo: '#4F46E5',
+    glass: 'rgba(255, 255, 255, 0.8)',
+};
