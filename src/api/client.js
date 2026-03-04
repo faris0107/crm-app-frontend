@@ -4,7 +4,7 @@ import NetInfo from '@react-native-community/netinfo';
 import * as Keychain from 'react-native-keychain';
 import * as RootNavigation from '../navigation/RootNavigation';
 
-const API_BASE_URL = 'https://57cd-2405-201-e031-40be-dd39-e745-a69e-1d33.ngrok-free.app/api';
+const API_BASE_URL = 'https://crm-app-backend-jcts.onrender.com/api';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
