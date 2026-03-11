@@ -36,6 +36,16 @@ const ChangePasswordScreen = ({ navigation }) => {
             });
             return;
         }
+        if (oldPassword === newPassword) {
+            setModalConfig({
+                visible: true,
+                title: 'Error',
+                message: 'New password cannot be the same as the current password',
+                confirmText: 'OK',
+                onConfirm: () => setModalConfig(prev => ({ ...prev, visible: false }))
+            });
+            return;
+        }
 
         setLoading(true);
         try {

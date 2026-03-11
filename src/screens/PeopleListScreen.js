@@ -6,6 +6,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Icon from 'react-native-vector-icons/Feather';
 
 const PeopleListScreen = ({ route, navigation }) => {
+    const filterType = route?.params?.filter;
+    const parentStaff = route?.params?.parentStaff;
+
     const [people, setPeople] = useState([]);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
@@ -17,15 +20,36 @@ const PeopleListScreen = ({ route, navigation }) => {
     const [admins, setAdmins] = useState([]);
     const [l1Managers, setL1Managers] = useState([]);
     const [l2Supervisors, setL2Supervisors] = useState([]);
-    const [selectedFilters, setSelectedFilters] = useState({ companyId: null, adminId: null, l1Id: null, l2Id: null });
+    const [selectedFilters, setSelectedFilters] = useState({
+        companyId: null,
+        adminId: null,
+        l1Id: null,
+        l2Id: null,
+        statusId: null,
+        assignment: filterType === 'assigned' ? 'me' : 'all',
+        showDeleted: false
+    });
     const [showFilters, setShowFilters] = useState(false);
+    const [statuses, setStatuses] = useState([]);
 
-    const filterType = route?.params?.filter;
-    const parentStaff = route?.params?.parentStaff;
+    // Pagination states
+    const [page, setPage] = useState(1);
+    const [hasMore, setHasMore] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [debouncedSearch, setDebouncedSearch] = useState('');
 
-    const fetchPeople = async () => {
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            setDebouncedSearch(search);
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [search]);
+
+    const fetchPeople = async (pageNumber = 1, isRefreshing = false) => {
+        if (pageNumber > 1) setLoadingMore(true);
+        else if (!isRefreshing) setLoading(true);
+
         try {
-            setLoading(true);
             const [userDataString, activeCompString] = await Promise.all([
                 AsyncStorage.getItem('user'),
                 AsyncStorage.getItem('activeCompanyId')
@@ -39,140 +63,78 @@ const PeopleListScreen = ({ route, navigation }) => {
                 const cleanActiveComp = (activeCompString === 'null' || !activeCompString) ? null : activeCompString;
                 setActiveCompanyId(cleanActiveComp);
 
-                let queryParams = [];
+                let queryParams = [`page=${pageNumber}`, `limit=48`];
+                if (debouncedSearch) {
+                    queryParams.push(`search=${encodeURIComponent(debouncedSearch)}`);
+                }
+
+                if (selectedFilters.statusId) {
+                    queryParams.push(`status_id=${selectedFilters.statusId}`);
+                }
+
+                if (selectedFilters.showDeleted) {
+                    queryParams.push('show_deleted=true');
+                }
+
                 const isGlobalSuper = !userData.entity_id && !cleanActiveComp;
 
                 if (parentStaff) {
                     queryParams.push(`assigned_to=${parentStaff.id}`);
-                } else if (userData?.role === 'L2') {
+                } else if (selectedFilters.assignment === 'me' && userData.id) {
                     queryParams.push(`assigned_to=${userData.id}`);
-                } else if (userData?.role === 'L1') {
-                    const l2Res = await apiClient.get(`/users?parent_id=${userData.id}`);
-                    const l2Ids = l2Res.data.map(u => u.id).join(',');
-                    queryParams.push(`assigned_to=${l2Ids || '999999'}`);
-                } else if (userData?.role === 'ADMIN') {
-                    // Admin needs to find all L2s under their L1s
-                    const l1Res = await apiClient.get(`/users?parent_id=${userData.id}`);
-                    const l1Ids = l1Res.data.map(u => u.id);
-
-                    const l2Promises = l1Ids.map(id => apiClient.get(`/users?parent_id=${id}`));
-                    const l2Results = await Promise.all(l2Promises);
-                    const l2Ids = l2Results.flatMap(res => res.data.map(u => u.id)).join(',');
-                    queryParams.push(`assigned_to=${l2Ids || '999999'}`);
+                } else if (selectedFilters.assignment === 'unassigned') {
+                    queryParams.push(`assigned_to=null`);
                 } else if (isGlobalSuper) {
                     if (selectedFilters.l2Id) {
                         queryParams.push(`assigned_to=${selectedFilters.l2Id}`);
                     } else if (selectedFilters.l1Id) {
-                        const l2Res = await apiClient.get(`/users?parent_id=${selectedFilters.l1Id}`);
-                        const l2Ids = l2Res.data.map(u => u.id).join(',');
-                        queryParams.push(`assigned_to=${l2Ids || '999999'}`);
+                        queryParams.push(`parent_l1=${selectedFilters.l1Id}`);
                     } else if (selectedFilters.adminId) {
-                        const l1Res = await apiClient.get(`/users?parent_id=${selectedFilters.adminId}`);
-                        const l1Ids = l1Res.data.map(u => u.id);
-                        const l2Promises = l1Ids.map(id => apiClient.get(`/users?parent_id=${id}`));
-                        const l2Results = await Promise.all(l2Promises);
-                        const l2Ids = l2Results.flatMap(res => res.data.map(u => u.id)).join(',');
-                        queryParams.push(`assigned_to=${l2Ids || '999999'}`);
-                    } else if (selectedFilters.companyId) {
-                        // For SuperAdmins, using the header is safer than the query param for tenant partitioning
-                        queryParams.push(`_t=${Date.now()}`);
-                    } else {
-                        // AGGREGATION MODE: Fetch from all companies
-                        let companyList = companies;
-                        if (companyList.length === 0) {
-                            const cRes = await apiClient.get('/companies');
-                            companyList = cRes.data || [];
-                            setCompanies(companyList);
-                        }
-
-                        console.log(`Aggregating contacts from ${companyList.length} companies...`);
-
-                        // Fetch root contacts
-                        const rootPromise = apiClient.get(`/people?_t=${Date.now()}`);
-
-                        // Fetch people for each company
-                        const companyPromises = companyList.map(c =>
-                            apiClient.get(`/people?_t=${Date.now()}`, {
-                                headers: { 'X-Company-Context': c.id }
-                            })
-                                .then(res => {
-                                    const raw = Array.isArray(res.data) ? res.data : (res.data?.people || res.data?.data || []);
-                                    // Manually attach entity_id to ensure navigation works
-                                    const enriched = raw.map(p => ({
-                                        ...p,
-                                        entity_id: p.entity_id || c.id
-                                    }));
-                                    console.log(`- Company ${c.name}: Found ${enriched.length} contacts`);
-                                    return { ...res, data: enriched };
-                                })
-                                .catch(err => {
-                                    console.log(`- Company ${c.name}: Fetch failed`, err.message);
-                                    return { data: [] };
-                                })
-                        );
-
-                        const allResponses = await Promise.all([rootPromise, ...companyPromises]);
-                        let aggregatedMap = new Map();
-                        allResponses.forEach(res => {
-                            const data = Array.isArray(res.data) ? res.data : (res.data?.people || res.data?.data || []);
-                            data.forEach(p => aggregatedMap.set(p.id, p));
-                        });
-
-                        const aggregated = Array.from(aggregatedMap.values());
-                        console.log('Total Aggregated Contacts:', aggregated.length);
-                        setPeople(aggregated);
-                        setLoading(false);
-                        setRefreshing(false);
-                        return; // Early exit
+                        queryParams.push(`parent_admin=${selectedFilters.adminId}`);
                     }
-
-                    if (companies.length === 0) {
-                        const cRes = await apiClient.get('/companies');
-                        setCompanies(cRes.data || []);
-                    }
-                } else if (cleanActiveComp) {
-                    queryParams.push(`entity_id=${cleanActiveComp}`);
-                }
-
-                // Ensure _t is always present for cache busting
-                if (!queryParams.some(p => p.startsWith('_t='))) {
-                    queryParams.push(`_t=${Date.now()}`);
                 }
 
                 let url = '/people' + (queryParams.length > 0 ? '?' + queryParams.join('&') : '');
-                console.log('Fetching people from:', url);
-
                 const headers = (selectedFilters.companyId || parentStaff?.entityId) ?
                     { 'X-Company-Context': selectedFilters.companyId || parentStaff?.entityId } : {};
 
-                console.log('Fetching people with Headers:', JSON.stringify(headers));
-
                 const response = await apiClient.get(url, { headers });
-                console.log('Full People Response JSON:', JSON.stringify(response.data).substring(0, 500));
 
-                const rawData = response.data || [];
-                let finalData = Array.isArray(rawData) ? rawData : (rawData.people || rawData.data || []);
+                // Handle new backend response format
+                const rawData = response.data.people || [];
+                const pagination = response.data.pagination || { hasMore: false };
 
-                // Filter manually for safety/drill-down
-                if (parentStaff) {
-                    finalData = finalData.filter(p => p.assigned_to === parentStaff.id || p.assigned_to?.id === parentStaff.id);
-                } else if (userData?.role === 'L2') {
-                    finalData = finalData.filter(p => p.assigned_to === userData.id || p.assigned_to?.id === userData.id);
+                if (pageNumber === 1) {
+                    setPeople(rawData);
+                } else {
+                    setPeople(prev => [...prev, ...rawData]);
                 }
 
-                setPeople(finalData);
+                setHasMore(pagination.hasMore);
+                setPage(pageNumber);
             }
         } catch (error) {
             console.error('Fetch People Error:', error);
         } finally {
             setLoading(false);
             setRefreshing(false);
+            setLoadingMore(false);
         }
     };
 
     useEffect(() => {
-        fetchPeople();
-    }, [parentStaff, selectedFilters]);
+        const unsubscribe = navigation.addListener('focus', () => {
+            // Re-fetch the first page to ensure list accuracy after returning from details/edit
+            fetchPeople(1);
+        });
+        return unsubscribe;
+    }, [navigation, selectedFilters, debouncedSearch]);
+
+    useEffect(() => {
+        setPage(1);
+        setHasMore(true);
+        fetchPeople(1);
+    }, [parentStaff, selectedFilters, debouncedSearch, filterType]);
 
     useEffect(() => {
         if (selectedFilters.companyId) {
@@ -204,43 +166,85 @@ const PeopleListScreen = ({ route, navigation }) => {
         }
     }, [selectedFilters.l1Id]);
 
+    useEffect(() => {
+        const fetchMetadata = async () => {
+            try {
+                const [sRes, userStr] = await Promise.all([
+                    apiClient.get('/statuses'),
+                    AsyncStorage.getItem('user')
+                ]);
+                setStatuses(sRes.data);
+
+                if (userStr) {
+                    const user = JSON.parse(userStr);
+                    // Only sub-admins/super-admins should fetch companies
+                    if (!user.entity_id) {
+                        const cRes = await apiClient.get('/companies');
+                        setCompanies(cRes.data);
+                    }
+                }
+            } catch (error) {
+                console.log('Metadata fetch partial fail (expected for some roles):', error.message);
+            }
+        };
+        fetchMetadata();
+    }, []);
+
     const onRefresh = () => {
         setRefreshing(true);
-        fetchPeople();
+        setPage(1);
+        setHasMore(true);
+        fetchPeople(1, true);
     };
 
-    const filteredPeople = people.filter(p => {
-        const pId = p.text_id || p.textId || '';
-        const matchesSearch = p.name.toLowerCase().includes(search.toLowerCase()) ||
-            pId.toLowerCase().includes(search.toLowerCase());
-
-        if (filterType === 'assigned' && userId) {
-            return matchesSearch && p.assigned_to === userId;
+    const handleLoadMore = () => {
+        if (!loadingMore && hasMore) {
+            fetchPeople(page + 1);
         }
-        return matchesSearch;
-    });
+    };
 
-    const renderItem = ({ item }) => (
-        <TouchableOpacity
-            style={styles.card}
-            onPress={() => navigation.navigate('PersonDetail', {
-                personId: item.id,
-                entityId: item.entity_id
-            })}
-        >
-            <View style={styles.cardContent}>
-                <View style={styles.infoContainer}>
-                    <Text style={styles.name}>{item.name}</Text>
-                    <Text style={styles.textId}>ID: {item.text_id || item.textId}</Text>
+    // Backend already handles search, frontend filtering is unused here
+    // as the FlatList uses the 'people' state directly.
+
+    const renderItem = ({ item }) => {
+        const isAssigned = !!item.assigned_to;
+        const assigneeName = item.Assignee?.name || 'Unassigned';
+
+        return (
+            <TouchableOpacity
+                style={styles.card}
+                onPress={() => navigation.navigate('PersonDetail', {
+                    personId: item.id,
+                    entityId: item.entity_id
+                })}
+            >
+                <View style={styles.cardContent}>
+                    <View style={styles.infoContainer}>
+                        <Text style={styles.name}>{item.name}</Text>
+                        <Text style={styles.textId}>ID: {item.text_id || item.textId}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4 }}>
+                            <Icon name="user" size={12} color={isAssigned ? Colors.primary : Colors.danger} />
+                            <Text style={[styles.assigneeText, { color: isAssigned ? Colors.primary : Colors.danger }]}>
+                                {assigneeName}
+                            </Text>
+                        </View>
+                    </View>
+                    <View style={styles.badgeContainer}>
+                        <View style={[styles.statusBadge, { backgroundColor: (item.Status?.color || Colors.border) + '20' }]}>
+                            <Text style={[styles.statusText, { color: item.Status?.color || Colors.textLight }]}>
+                                {item.Status?.name || 'No Status'}
+                            </Text>
+                        </View>
+                        {!isAssigned && (
+                            <View style={[styles.unassignedBadge]}>
+                                <Text style={styles.unassignedText}>OPEN</Text>
+                            </View>
+                        )}
+                    </View>
                 </View>
-                <View style={[styles.statusBadge, { backgroundColor: item.Status?.color + '20' || Colors.border }]}>
-                    <Text style={[styles.statusText, { color: item.Status?.color || Colors.textLight }]}>
-                        {item.Status?.name || 'No Status'}
-                    </Text>
-                </View>
-            </View>
-        </TouchableOpacity>
-    );
+            </TouchableOpacity>
+        );
+    };
 
     const getHeaderTitle = () => {
         if (parentStaff) return `${parentStaff.name}'s Contacts`;
@@ -259,14 +263,12 @@ const PeopleListScreen = ({ route, navigation }) => {
                     <Text style={[styles.title, parentStaff && { fontSize: 20 }]}>{getHeaderTitle()}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                    {!parentStaff && !currentUser?.entity_id && !activeCompanyId && (
-                        <TouchableOpacity
-                            onPress={() => setShowFilters(!showFilters)}
-                            style={{ marginRight: 15 }}
-                        >
-                            <Icon name="filter" size={24} color={showFilters ? Colors.primary : Colors.textLight} />
-                        </TouchableOpacity>
-                    )}
+                    <TouchableOpacity
+                        onPress={() => setShowFilters(!showFilters)}
+                        style={{ marginRight: 15 }}
+                    >
+                        <Icon name="filter" size={24} color={showFilters ? Colors.primary : Colors.textLight} />
+                    </TouchableOpacity>
                     {(!currentUser?.entity_id ? !!activeCompanyId : true) && (
                         <TouchableOpacity onPress={() => navigation.navigate('AddUpdatePerson', { parentStaff })}>
                             <Text style={styles.addButton}>Add New</Text>
@@ -278,33 +280,101 @@ const PeopleListScreen = ({ route, navigation }) => {
             <View style={styles.searchContainer}>
                 <TextInput
                     style={styles.searchInput}
-                    placeholder="Search by name or ID..."
+                    placeholder="Search name, ID or mobile..."
                     value={search}
                     onChangeText={setSearch}
                     placeholderTextColor={Colors.textLight}
                 />
             </View>
 
-            {!parentStaff && !currentUser?.entity_id && !activeCompanyId && showFilters && (
+            {showFilters && (
                 <View style={styles.globalFilters}>
-                    {/* Level 1: Company */}
+                    {/* Level 0: Assignment Filter (Always Visible) */}
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
+                        {!selectedFilters.showDeleted && (
+                            <>
+                                <TouchableOpacity
+                                    style={[styles.filterChip, selectedFilters.assignment === 'all' && styles.filterChipActive]}
+                                    onPress={() => setSelectedFilters(prev => ({ ...prev, assignment: 'all' }))}
+                                >
+                                    <Text style={[styles.filterChipText, selectedFilters.assignment === 'all' && styles.filterChipTextActive]}>All Contacts</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[styles.filterChip, selectedFilters.assignment === 'me' && styles.filterChipActive]}
+                                    onPress={() => setSelectedFilters(prev => ({ ...prev, assignment: 'me' }))}
+                                >
+                                    <Text style={[styles.filterChipText, selectedFilters.assignment === 'me' && styles.filterChipTextActive]}>Assigned to Me</Text>
+                                </TouchableOpacity>
+                                <TouchableOpacity
+                                    style={[styles.filterChip, selectedFilters.assignment === 'unassigned' && styles.filterChipActive]}
+                                    onPress={() => setSelectedFilters(prev => ({ ...prev, assignment: 'unassigned' }))}
+                                >
+                                    <Text style={[styles.filterChipText, selectedFilters.assignment === 'unassigned' && styles.filterChipTextActive]}>Unassigned</Text>
+                                </TouchableOpacity>
+                            </>
+                        )}
+
+                        {/* Special Filter for Super Admin: Show Deleted */}
+                        {!currentUser?.entity_id && !activeCompanyId && (
+                            <TouchableOpacity
+                                style={[styles.filterChip, selectedFilters.showDeleted && { backgroundColor: Colors.danger, borderColor: Colors.danger }]}
+                                onPress={() => setSelectedFilters(prev => ({ ...prev, showDeleted: !prev.showDeleted }))}
+                            >
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <Icon name="trash-2" size={14} color={selectedFilters.showDeleted ? Colors.white : Colors.textLight} style={{ marginRight: 6 }} />
+                                    <Text style={[styles.filterChipText, selectedFilters.showDeleted && { color: Colors.white }]}>
+                                        {selectedFilters.showDeleted ? 'Viewing Archive' : 'View Deleted'}
+                                    </Text>
+                                </View>
+                            </TouchableOpacity>
+                        )}
+                    </ScrollView>
+
+                    {/* Level 0.5: Status Filter (Always Visible) */}
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
                         <TouchableOpacity
-                            style={[styles.filterChip, !selectedFilters.companyId && styles.filterChipActive]}
-                            onPress={() => setSelectedFilters({ companyId: null, adminId: null, l1Id: null, l2Id: null })}
+                            style={[styles.filterChip, !selectedFilters.statusId && styles.filterChipActive]}
+                            onPress={() => setSelectedFilters(prev => ({ ...prev, statusId: null }))}
                         >
-                            <Text style={[styles.filterChipText, !selectedFilters.companyId && styles.filterChipTextActive]}>All Companies</Text>
+                            <Text style={[styles.filterChipText, !selectedFilters.statusId && styles.filterChipTextActive]}>All Status</Text>
                         </TouchableOpacity>
-                        {companies.map(c => (
+                        {statuses.map(s => (
                             <TouchableOpacity
-                                key={c.id}
-                                style={[styles.filterChip, selectedFilters.companyId === c.id && styles.filterChipActive]}
-                                onPress={() => setSelectedFilters({ companyId: c.id, adminId: null, l1Id: null, l2Id: null })}
+                                key={s.id}
+                                style={[styles.filterChip, selectedFilters.statusId === s.id && styles.filterChipActive]}
+                                onPress={() => setSelectedFilters(prev => ({ ...prev, statusId: s.id }))}
                             >
-                                <Text style={[styles.filterChipText, selectedFilters.companyId === c.id && styles.filterChipTextActive]}>{c.name}</Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                    <View style={[styles.statusDot, { backgroundColor: s.color, width: 8, height: 8, borderRadius: 4, marginRight: 6 }]} />
+                                    <Text style={[styles.filterChipText, selectedFilters.statusId === s.id && styles.filterChipTextActive]}>{s.name}</Text>
+                                </View>
                             </TouchableOpacity>
                         ))}
                     </ScrollView>
+
+                    {/* Hierarchy Filters (Only for Global Admins) */}
+                    {!parentStaff && !currentUser?.entity_id && !activeCompanyId && (
+                        <>
+                            {/* Level 1: Company */}
+                            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
+                                <TouchableOpacity
+                                    style={[styles.filterChip, !selectedFilters.companyId && styles.filterChipActive]}
+                                    onPress={() => setSelectedFilters(prev => ({ ...prev, companyId: null, adminId: null, l1Id: null, l2Id: null }))}
+                                >
+                                    <Text style={[styles.filterChipText, !selectedFilters.companyId && styles.filterChipTextActive]}>All Companies</Text>
+                                </TouchableOpacity>
+                                {companies.map(c => (
+                                    <TouchableOpacity
+                                        key={c.id}
+                                        style={[styles.filterChip, selectedFilters.companyId === c.id && styles.filterChipActive]}
+                                        onPress={() => setSelectedFilters(prev => ({ ...prev, companyId: c.id, adminId: null, l1Id: null, l2Id: null }))}
+                                    >
+                                        <Text style={[styles.filterChipText, selectedFilters.companyId === c.id && styles.filterChipTextActive]}>{c.name}</Text>
+                                    </TouchableOpacity>
+                                ))}
+                            </ScrollView>
+                        </>
+                    )}
 
                     {/* Level 2: Admin */}
                     {selectedFilters.companyId && admins.length > 0 && (
@@ -371,17 +441,24 @@ const PeopleListScreen = ({ route, navigation }) => {
                 </View>
             )}
 
-            {loading ? (
+            {loading && page === 1 ? (
                 <ActivityIndicator style={styles.loader} color={Colors.primary} />
             ) : (
                 <FlatList
-                    data={filteredPeople}
+                    data={people}
                     renderItem={renderItem}
                     keyExtractor={item => item.id.toString()}
                     contentContainerStyle={styles.listContent}
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+                    onEndReached={handleLoadMore}
+                    onEndReachedThreshold={0.5}
+                    ListFooterComponent={
+                        loadingMore ? (
+                            <ActivityIndicator style={{ marginVertical: 20 }} color={Colors.primary} />
+                        ) : null
+                    }
                     ListEmptyComponent={
-                        <Text style={styles.emptyText}>No contacts found</Text>
+                        <Text style={styles.emptyText}>{loading ? 'Loading...' : 'No contacts found'}</Text>
                     }
                 />
             )}
@@ -473,6 +550,28 @@ const styles = StyleSheet.create({
     statusText: {
         fontSize: 12,
         fontWeight: '700',
+    },
+    assigneeText: {
+        fontSize: 12,
+        marginLeft: 4,
+        fontWeight: '600',
+    },
+    badgeContainer: {
+        alignItems: 'flex-end',
+    },
+    unassignedBadge: {
+        backgroundColor: Colors.danger + '15',
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 4,
+        marginTop: 4,
+        borderWidth: 1,
+        borderColor: Colors.danger + '30',
+    },
+    unassignedText: {
+        fontSize: 10,
+        fontWeight: '800',
+        color: Colors.danger,
     },
     globalFilters: {
         backgroundColor: Colors.white,

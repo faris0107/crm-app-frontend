@@ -35,6 +35,7 @@ const AddUserScreen = ({ navigation, route }) => {
             const userDataString = await AsyncStorage.getItem('user');
             if (userDataString) {
                 const parsed = JSON.parse(userDataString);
+                if (parsed.role) parsed.role = parsed.role.toUpperCase();
                 setCurrentUser(parsed);
 
                 // Fetch active context for SuperAdmin
@@ -95,16 +96,50 @@ const AddUserScreen = ({ navigation, route }) => {
                     let filteredParents = [];
                     if (selectedRoleName === 'L1') {
                         // L1 needs an ADMIN parent
-                        setAdmins(response.data.filter(u => u.Role?.name === 'ADMIN'));
-                    } else if (selectedRoleName === 'L2') {
-                        // L2 needs an L1 parent, but we'll show Admin first
-                        const adminsList = response.data.filter(u => u.Role?.name === 'ADMIN');
+                        let adminsList = response.data.filter(u => u.Role?.name === 'ADMIN');
+                        if (currentUser.role === 'ADMIN') {
+                            adminsList = adminsList.filter(u => u.id === currentUser.id);
+                        }
                         setAdmins(adminsList);
-                        setAllL1(response.data.filter(u => u.Role?.name === 'L1'));
+                        if (adminsList.length === 1) {
+                            setFormData(prev => ({ ...prev, parent_id: adminsList[0].id }));
+                        }
+                    } else if (selectedRoleName === 'L2') {
+                        // L2 needs an L1 parent
+                        let adminsList = response.data.filter(u => u.Role?.name === 'ADMIN');
+                        let l1List = response.data.filter(u => u.Role?.name === 'L1');
 
-                        // If current user is ADMIN, pre-select them
-                        if (currentUser?.role === 'ADMIN') {
+                        if (currentUser.role === 'ADMIN') {
+                            adminsList = adminsList.filter(u => u.id === currentUser.id);
+                            l1List = l1List.filter(u => u.parent_id === currentUser.id);
+                        } else if (currentUser.role === 'L1') {
+                            // Find 'Me' in the latest list to get the most accurate parent_id
+                            const me = response.data.find(u => String(u.id) === String(currentUser.id));
+                            const myParentId = me?.parent_id || currentUser.parent_id;
+
+                            const parentAdmin = adminsList.find(a => String(a.id) === String(myParentId));
+
+                            if (parentAdmin) {
+                                // Strictly show only the direct parent
+                                adminsList = [parentAdmin];
+                                setSelectedAdminId(parentAdmin.id);
+                            } else {
+                                // If parent not found, show nothing to maintain privacy
+                                adminsList = [];
+                            }
+                            l1List = l1List.filter(u => u.id === currentUser.id);
+                        }
+
+                        setAdmins(adminsList);
+                        setAllL1(l1List);
+
+                        // Auto-selection logic
+                        if (currentUser.role === 'ADMIN') {
                             setSelectedAdminId(currentUser.id);
+                        } else if (currentUser.role === 'L1') {
+                            const pId = currentUser.parent_id || (adminsList.length === 1 ? adminsList[0].id : null);
+                            setSelectedAdminId(pId);
+                            setFormData(prev => ({ ...prev, parent_id: currentUser.id }));
                         }
                     }
                 } catch (error) {
@@ -197,8 +232,8 @@ const AddUserScreen = ({ navigation, route }) => {
         }
 
         if (currentRole === 'ADMIN') {
-            // Admin can create L1
-            return r.name === 'L1';
+            // Admin can create L1 and L2
+            return r.name === 'L1' || r.name === 'L2';
         }
 
         if (currentRole === 'L1') {

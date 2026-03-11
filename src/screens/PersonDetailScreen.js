@@ -3,17 +3,31 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Linking, Activity
 import { Colors } from '../theme/Colors';
 import apiClient from '../api/client';
 import AppConfirmModal from '../components/AppConfirmModal';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import Icon from 'react-native-vector-icons/Feather';
 
 const PersonDetailScreen = ({ route, navigation }) => {
     const { personId, entityId } = route.params;
     const [person, setPerson] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [currentUser, setCurrentUser] = useState(null);
     const [modalConfig, setModalConfig] = useState({ visible: false, title: '', message: '', onConfirm: () => { } });
 
     const fetchDetail = async () => {
         try {
+            const userDataString = await AsyncStorage.getItem('user');
+            if (userDataString) {
+                setCurrentUser(JSON.parse(userDataString));
+            }
+
             console.log(`Fetching detail for ${personId} with entity ${entityId}`);
-            const response = await apiClient.get(`/people/${personId}?_t=${Date.now()}`, {
+            let url = `/people/${personId}?_t=${Date.now()}`;
+            // If superadmin, they might want to see deleted contact (e.g. for restore)
+            if (!userDataString || !JSON.parse(userDataString).entity_id) {
+                url += `&show_deleted=true`;
+            }
+
+            const response = await apiClient.get(url, {
                 headers: entityId ? { 'X-Company-Context': entityId } : {}
             });
             setPerson(response.data);
@@ -67,6 +81,54 @@ const PersonDetailScreen = ({ route, navigation }) => {
         }
     };
 
+    const handleDelete = async () => {
+        setModalConfig({
+            visible: true,
+            title: 'Delete Contact',
+            message: 'Are you sure you want to delete this contact? It will be moved to archives.',
+            confirmText: 'Delete',
+            type: 'danger',
+            onCancel: () => setModalConfig(prev => ({ ...prev, visible: false })),
+            onConfirm: async () => {
+                setModalConfig(prev => ({ ...prev, visible: false }));
+                setLoading(true);
+                try {
+                    await apiClient.delete(`/people/${personId}`, {
+                        headers: entityId ? { 'X-Company-Context': entityId } : {}
+                    });
+                    navigation.goBack();
+                } catch (error) {
+                    Alert.alert('Error', error.response?.data?.message || 'Failed to delete');
+                    setLoading(false);
+                }
+            }
+        });
+    };
+
+    const handleRestore = async () => {
+        setModalConfig({
+            visible: true,
+            title: 'Restore Contact',
+            message: 'Bring this contact back to active list?',
+            confirmText: 'Restore',
+            type: 'success',
+            onCancel: () => setModalConfig(prev => ({ ...prev, visible: false })),
+            onConfirm: async () => {
+                setModalConfig(prev => ({ ...prev, visible: false }));
+                setLoading(true);
+                try {
+                    await apiClient.post(`/people/${personId}/restore`, {}, {
+                        headers: entityId ? { 'X-Company-Context': entityId } : {}
+                    });
+                    fetchDetail(); // Refresh
+                } catch (error) {
+                    Alert.alert('Error', error.response?.data?.message || 'Failed to restore');
+                    setLoading(false);
+                }
+            }
+        });
+    };
+
     const renderTags = () => {
         let tags = person?.tags;
         if (typeof tags === 'string') {
@@ -94,15 +156,27 @@ const PersonDetailScreen = ({ route, navigation }) => {
 
     if (loading) return <ActivityIndicator style={styles.loader} color={Colors.primary} />;
 
+    const isSuperAdmin = !currentUser?.entity_id;
+    const isAdmin = currentUser?.role === 'ADMIN';
+    const isL1 = currentUser?.role === 'L1';
+    const isL2 = currentUser?.role === 'L2';
+    const isOwner = person?.assigned_to === currentUser?.id;
+
+    let canEdit = false;
+    if (isSuperAdmin || isAdmin || isL1) {
+        canEdit = true;
+    } else if (isL2) {
+        canEdit = isOwner;
+    }
+
     return (
         <View style={styles.container}>
             <View style={styles.header}>
-                <TouchableOpacity onPress={() => navigation.goBack()}>
-                    <Text style={styles.backBtn}>Back</Text>
+                <TouchableOpacity onPress={() => navigation.goBack()} style={{ padding: 4 }}>
+                    <Icon name="chevron-left" size={24} color={Colors.primary} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => navigation.navigate('AddUpdatePerson', { person })}>
-                    <Text style={styles.editBtn}>Edit</Text>
-                </TouchableOpacity>
+                <Text style={styles.headerTitle}>Contact Detail</Text>
+                <View style={{ width: 40 }} />
             </View>
 
             <ScrollView contentContainerStyle={styles.content}>
@@ -118,12 +192,21 @@ const PersonDetailScreen = ({ route, navigation }) => {
 
                 <View style={styles.actionRow}>
                     <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#E0F2FE' }]} onPress={handleCall}>
+                        <Icon name="phone" size={18} color="#0369A1" style={{ marginBottom: 4 }} />
                         <Text style={styles.actionBtnText}>Call</Text>
                     </TouchableOpacity>
                     <TouchableOpacity style={[styles.actionBtn, { backgroundColor: '#DCFCE7' }]} onPress={handleWhatsApp}>
+                        <Icon name="message-circle" size={18} color="#15803D" style={{ marginBottom: 4 }} />
                         <Text style={styles.actionBtnText}>WhatsApp</Text>
                     </TouchableOpacity>
                 </View>
+
+                {person?.is_deleted && (
+                    <View style={styles.deleteWarning}>
+                        <Icon name="alert-triangle" size={18} color={Colors.danger} />
+                        <Text style={styles.deleteWarningText}>This contact is deleted</Text>
+                    </View>
+                )}
 
                 <View style={styles.section}>
                     <Text style={styles.sectionTitle}>Information</Text>
@@ -163,6 +246,38 @@ const PersonDetailScreen = ({ route, navigation }) => {
                 </View>
             </ScrollView>
 
+            {(!person?.is_deleted && canEdit) && (
+                <View style={styles.bottomContainer}>
+                    <View style={{ flexDirection: 'row' }}>
+                        <TouchableOpacity
+                            style={[styles.fixedEditBtn, { flex: 2, marginRight: 10 }]}
+                            onPress={() => navigation.navigate('AddUpdatePerson', { person })}
+                        >
+                            <Icon name="edit-3" size={20} color={Colors.white} style={{ marginRight: 8 }} />
+                            <Text style={styles.fixedEditBtnText}>Edit</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                            style={[styles.fixedEditBtn, { flex: 1, backgroundColor: Colors.border }]}
+                            onPress={handleDelete}
+                        >
+                            <Icon name="trash-2" size={20} color={Colors.textLight} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            )}
+
+            {(person?.is_deleted && isSuperAdmin) && (
+                <View style={styles.bottomContainer}>
+                    <TouchableOpacity
+                        style={[styles.fixedEditBtn, { backgroundColor: Colors.primary }]}
+                        onPress={handleRestore}
+                    >
+                        <Icon name="refresh-cw" size={20} color={Colors.white} style={{ marginRight: 8 }} />
+                        <Text style={styles.fixedEditBtnText}>Restore Contact</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
+
             <AppConfirmModal
                 visible={modalConfig.visible}
                 title={modalConfig.title}
@@ -195,14 +310,17 @@ const styles = StyleSheet.create({
         backgroundColor: Colors.white,
         flexDirection: 'row',
         justifyContent: 'space-between',
+        alignItems: 'center',
     },
-    backBtn: {
-        color: Colors.primary,
-        fontWeight: '600',
+    headerTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: Colors.text,
     },
     editBtn: {
-        color: Colors.accent,
-        fontWeight: '600',
+        color: Colors.primary,
+        fontWeight: '700',
+        fontSize: 16,
     },
     content: {
         padding: 24,
@@ -321,6 +439,45 @@ const styles = StyleSheet.create({
     emptyText: {
         color: Colors.textLight,
         textAlign: 'center',
+    },
+    bottomContainer: {
+        padding: 20,
+        backgroundColor: Colors.white,
+        borderTopWidth: 1,
+        borderTopColor: Colors.border,
+        elevation: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+    },
+    fixedEditBtn: {
+        backgroundColor: Colors.primary,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 14,
+        borderRadius: 12,
+        elevation: 4,
+    },
+    fixedEditBtnText: {
+        color: Colors.white,
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    deleteWarning: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: Colors.danger + '10',
+        padding: 12,
+        borderRadius: 12,
+        marginBottom: 20,
+    },
+    deleteWarningText: {
+        color: Colors.danger,
+        fontWeight: '700',
+        marginLeft: 8,
     },
 });
 

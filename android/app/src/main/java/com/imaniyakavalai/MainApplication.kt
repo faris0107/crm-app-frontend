@@ -1,4 +1,4 @@
-package com.crmapp
+package com.imaniyakavalai
 
 import android.app.Application
 import com.facebook.react.PackageList

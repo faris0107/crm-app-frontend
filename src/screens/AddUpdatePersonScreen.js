@@ -8,6 +8,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import Icon from 'react-native-vector-icons/Feather';
 import { normalize } from '../theme/Scaling';
 import AppConfirmModal from '../components/AppConfirmModal';
+import { TextInput, Platform } from 'react-native';
+import PhoneInput from 'react-native-phone-number-input';
+import { useRef } from 'react';
 
 const AddUpdatePersonScreen = ({ route, navigation }) => {
     const person = route.params?.person;
@@ -20,10 +23,13 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
         text_id: person?.text_id || '',
         mobile: person?.mobile || '',
         status_id: person?.status_id || '',
-        tags: Array.isArray(person?.tags) ? person.tags.join(', ') : (typeof person?.tags === 'string' ? person.tags : ''),
+        tags: Array.isArray(person?.tags) ? person.tags : [],
         assigned_to: person?.assigned_to || parentStaff?.id || '',
         referred_by: person?.referred_by || '',
     });
+    const [newTagText, setNewTagText] = useState('');
+    const [mobileRaw, setMobileRaw] = useState('');
+    const [isAddingTag, setIsAddingTag] = useState(false);
 
     const [statuses, setStatuses] = useState([]);
     const [allAdmins, setAllAdmins] = useState([]);
@@ -33,10 +39,23 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
     const [selectedL1Id, setSelectedL1Id] = useState(null);
     const [dropdowns, setDropdowns] = useState({ status: false, admin: false, l1: false, l2: false });
     const [loading, setLoading] = useState(false);
+    const phoneInput = useRef(null);
     const [modalConfig, setModalConfig] = useState({ visible: false, title: '', message: '', onConfirm: () => { } });
 
     useEffect(() => {
-        fetchInitialData();
+        const checkPermission = async () => {
+            await fetchInitialData();
+
+            const userDataString = await AsyncStorage.getItem('user');
+            if (userDataString && isEdit && person) {
+                const user = JSON.parse(userDataString);
+                if (user.role === 'L2' && person.assigned_to !== user.id) {
+                    Alert.alert('Unauthorized', 'You can only edit contacts assigned to you.');
+                    navigation.goBack();
+                }
+            }
+        };
+        checkPermission();
     }, []);
 
     const fetchInitialData = async () => {
@@ -53,9 +72,7 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                     effectiveEntityId = await AsyncStorage.getItem('activeCompanyId');
                 }
 
-                if (!isEdit && parsed.role === 'L2') {
-                    setForm(prev => ({ ...prev, assigned_to: parsed.id }));
-                }
+                // No auto-assignment to allow unassigned contacts
             }
 
             const [sRes, uRes] = await Promise.all([
@@ -80,6 +97,16 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                     if (l1Obj) setSelectedAdminId(l1Obj.parent_id);
                     setSelectedL1Id(l2Obj.parent_id);
                 }
+            } else if (isEdit && person?.assigned_to) {
+                // Pre-populate hierarchy for existing assignment
+                const l2Obj = l2.find(u => u.id === person.assigned_to);
+                if (l2Obj) {
+                    const l1Obj = l1.find(u => u.id === l2Obj.parent_id);
+                    if (l1Obj) {
+                        setSelectedAdminId(l1Obj.parent_id);
+                        setSelectedL1Id(l2Obj.parent_id);
+                    }
+                }
             }
         } catch (error) {
             console.error(error);
@@ -87,15 +114,40 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
     };
 
     const handleSave = async () => {
-        if (!form.name || !form.text_id) {
+        if (!form.name) {
             setModalConfig({
                 visible: true,
                 title: 'Missing Details',
-                message: 'Name and Contact ID are required fields.',
+                message: 'Full Name is a required field.',
                 confirmText: 'OK',
                 onConfirm: () => setModalConfig(prev => ({ ...prev, visible: false }))
             });
             return;
+        }
+
+        // --- Number Validation ---
+        let mobileToSave = form.mobile;
+        // If user hasn't typed any digits, treat as empty even if a country is selected
+        if (!mobileRaw || mobileRaw.trim() === '') {
+            // If it's an edit and they didn't touch it, mobileRaw is empty but form.mobile has the old value
+            // So we only clear it if they actually interacted or if it's a new record
+            if (!isEdit || (mobileRaw === '' && form.mobile !== person?.mobile)) {
+                mobileToSave = '';
+            }
+        }
+
+        if (mobileToSave && mobileToSave.trim() !== '') {
+            const isValid = phoneInput.current?.isValidNumber(mobileToSave);
+            if (!isValid) {
+                setModalConfig({
+                    visible: true,
+                    title: 'Invalid Number',
+                    message: 'Please enter a valid mobile number or leave it empty.',
+                    confirmText: 'OK',
+                    onConfirm: () => setModalConfig(prev => ({ ...prev, visible: false }))
+                });
+                return;
+            }
         }
 
         setModalConfig({
@@ -111,7 +163,8 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                 try {
                     const payload = {
                         ...form,
-                        tags: form.tags.split(',').map(t => t.trim()).filter(t => t),
+                        mobile: mobileToSave,
+                        tags: form.tags,
                         status_id: form.status_id || null,
                         assigned_to: form.assigned_to || null,
                         referred_by: form.referred_by || null,
@@ -164,28 +217,41 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
         }));
     };
 
-    const renderAssignmentHierarchy = () => {
-        if (isL2) {
-            return (
-                <View style={styles.infoBox}>
-                    <Icon name="info" size={16} color={Colors.primary} />
-                    <Text style={styles.infoText}>Assigned to: {currentUser.name} (Yourself)</Text>
-                </View>
-            );
+    const addTag = () => {
+        if (newTagText.trim()) {
+            if (!form.tags.includes(newTagText.trim())) {
+                setForm(prev => ({ ...prev, tags: [...prev.tags, newTagText.trim()] }));
+            }
+            setNewTagText('');
+            setIsAddingTag(false);
         }
+    };
+
+    const removeTag = (index) => {
+        const newTags = [...form.tags];
+        newTags.splice(index, 1);
+        setForm(prev => ({ ...prev, tags: newTags }));
+    };
+
+    const renderAssignmentHierarchy = () => {
+        // Everyone (Admin, L1, L2, SuperAdmin) can now see and use the hierarchy to assign or unassign
 
         const currentAdminId = isAdmin ? currentUser.id : selectedAdminId;
         const currentL1Id = isL1 ? currentUser.id : selectedL1Id;
 
-        const filteredL1 = allL1.filter(l1 => l1.parent_id === currentAdminId);
-        const filteredL2 = allL2.filter(l2 => l2.parent_id === currentL1Id);
+        let filteredL1 = allL1.filter(l1 => l1.parent_id === currentAdminId);
+        let filteredL2 = allL2.filter(l2 => l2.parent_id === currentL1Id);
+
+        if (isL2) {
+            filteredL2 = filteredL2.filter(l2 => l2.id === currentUser.id);
+        }
 
         return (
             <>
                 {/* 1. Admin Select (Only for SuperAdmin) */}
                 {!isAdmin && !isL1 && (
                     <>
-                        <Text style={styles.label}>Select Admin *</Text>
+                        <Text style={styles.label}>Select Admin</Text>
                         <TouchableOpacity style={styles.dropdown} onPress={() => toggleDropdown('admin')}>
                             <Text style={styles.dropdownValue}>
                                 {selectedAdminId ? allAdmins.find(a => a.id === selectedAdminId)?.name : 'Choose Admin'}
@@ -217,7 +283,7 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                 {/* 2. L1 Manager Select */}
                 {!isL1 && (
                     <>
-                        <Text style={styles.label}>Select L1 Manager *</Text>
+                        <Text style={styles.label}>Select L1 Manager</Text>
                         <TouchableOpacity
                             style={[styles.dropdown, !currentAdminId && { backgroundColor: Colors.border + '30' }]}
                             onPress={() => currentAdminId && toggleDropdown('l1')}
@@ -252,7 +318,7 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                 )}
 
                 {/* 3. L2 Supervisor Select */}
-                <Text style={styles.label}>Select L2 Supervisor *</Text>
+                <Text style={styles.label}>Select L2 Supervisor</Text>
                 <TouchableOpacity
                     style={[styles.dropdown, !currentL1Id && { backgroundColor: Colors.border + '30' }]}
                     onPress={() => currentL1Id && toggleDropdown('l2')}
@@ -293,9 +359,7 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                     <Icon name="x" size={24} color={Colors.danger} />
                 </TouchableOpacity>
                 <Text style={styles.title}>{isEdit ? 'Edit Contact' : 'New Contact'}</Text>
-                <TouchableOpacity onPress={handleSave} disabled={loading} style={styles.headerBtn}>
-                    <Icon name="check" size={24} color={Colors.primary} />
-                </TouchableOpacity>
+                <View style={{ width: 40 }} />
             </View>
 
             <ScrollView contentContainerStyle={styles.content}>
@@ -305,8 +369,29 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                     onChangeText={(v) => setForm({ ...form, name: v })}
                     placeholder="Enter name"
                 />
+
+                <Text style={styles.label}>Mobile Number</Text>
+                <PhoneInput
+                    ref={phoneInput}
+                    defaultValue={form.mobile}
+                    defaultCode="IN"
+                    layout="first"
+                    onChangeText={(text) => {
+                        setMobileRaw(text);
+                    }}
+                    onChangeFormattedText={(text) => {
+                        setForm(prev => ({ ...prev, mobile: text }));
+                    }}
+                    containerStyle={styles.phoneInputContainer}
+                    textContainerStyle={styles.phoneTextContainer}
+                    textInputStyle={styles.phoneInputText}
+                    codeTextStyle={styles.phoneCodeText}
+                    placeholder="Enter mobile number"
+                    disableArrowIcon={false}
+                />
+
                 <AppInput
-                    label="Contact ID *"
+                    label="Contact ID"
                     value={form.text_id}
                     onChangeText={(v) => setForm({ ...form, text_id: v })}
                     placeholder="e.g. PERS001"
@@ -344,19 +429,40 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
 
                 <View style={styles.divider} />
 
-                <AppInput
-                    label="Mobile Number"
-                    value={form.mobile}
-                    onChangeText={(v) => setForm({ ...form, mobile: v })}
-                    placeholder="+91 XXXXX XXXXX"
-                    keyboardType="phone-pad"
-                />
-                <AppInput
-                    label="Tags (comma separated)"
-                    value={form.tags}
-                    onChangeText={(v) => setForm({ ...form, tags: v })}
-                    placeholder="tag1, tag2"
-                />
+                <Text style={styles.label}>Tags</Text>
+                <View style={styles.tagsContainer}>
+                    {form.tags.map((tag, index) => (
+                        <View key={index} style={styles.tagChip}>
+                            <Text style={styles.tagText}>{tag}</Text>
+                            <TouchableOpacity onPress={() => removeTag(index)} style={styles.removeTagBtn}>
+                                <Icon name="x" size={12} color={Colors.textLight} />
+                            </TouchableOpacity>
+                        </View>
+                    ))}
+
+                    {isAddingTag ? (
+                        <View style={styles.addTagInputContainer}>
+                            <TextInput
+                                style={styles.addTagInput}
+                                value={newTagText}
+                                onChangeText={setNewTagText}
+                                placeholder="Tag name..."
+                                autoFocus
+                                onBlur={() => setIsAddingTag(false)}
+                                onSubmitEditing={addTag}
+                            />
+                            <TouchableOpacity onPress={addTag} style={styles.confirmTagBtn}>
+                                <Icon name="check" size={16} color={Colors.primary} />
+                            </TouchableOpacity>
+                        </View>
+                    ) : (
+                        <TouchableOpacity style={styles.addTagBtn} onPress={() => setIsAddingTag(true)}>
+                            <Icon name="plus" size={14} color={Colors.textLight} />
+                            <Text style={styles.addTagText}>New Tag</Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
+
                 <AppInput
                     label="Referred By"
                     value={form.referred_by}
@@ -364,12 +470,7 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                     placeholder="Enter who referred this contact"
                 />
 
-                <AppButton
-                    title={isEdit ? "Update Contact" : "Create Contact"}
-                    onPress={handleSave}
-                    loading={loading}
-                    style={styles.saveBtn}
-                />
+                <View style={{ height: 40 }} />
 
                 {isEdit && person && (
                     <View style={styles.auditContainer}>
@@ -385,7 +486,17 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
                         )}
                     </View>
                 )}
+                <View style={{ height: 100 }} />
             </ScrollView>
+
+            <View style={styles.bottomContainer}>
+                <AppButton
+                    title={isEdit ? "Update Contact" : "Create Contact"}
+                    onPress={handleSave}
+                    loading={loading}
+                    style={styles.fixedSaveBtn}
+                />
+            </View>
 
             <AppConfirmModal
                 visible={modalConfig.visible}
@@ -545,6 +656,112 @@ const styles = StyleSheet.create({
         color: Colors.textLight,
         textAlign: 'center',
         lineHeight: 16,
+    },
+    tagsContainer: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        backgroundColor: Colors.white,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: Colors.border,
+        padding: 12,
+        minHeight: 60,
+        alignItems: 'center',
+    },
+    tagChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: Colors.background,
+        borderRadius: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        margin: 4,
+        borderWidth: 1,
+        borderColor: Colors.border,
+    },
+    tagText: {
+        fontSize: 13,
+        color: Colors.text,
+        fontWeight: '500',
+    },
+    removeTagBtn: {
+        marginLeft: 6,
+        padding: 2,
+    },
+    addTagBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: Colors.border,
+        borderStyle: 'dashed',
+        margin: 4,
+    },
+    addTagText: {
+        fontSize: 13,
+        color: Colors.textLight,
+        marginLeft: 4,
+    },
+    addTagInputContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: Colors.white,
+        borderRadius: 6,
+        borderWidth: 1,
+        borderColor: Colors.primary,
+        paddingHorizontal: 8,
+        margin: 4,
+        flex: 1,
+        minWidth: 120,
+    },
+    addTagInput: {
+        flex: 1,
+        paddingVertical: 4,
+        fontSize: 13,
+        color: Colors.text,
+    },
+    confirmTagBtn: {
+        padding: 4,
+    },
+    bottomContainer: {
+        padding: 20,
+        backgroundColor: Colors.white,
+        borderTopWidth: 1,
+        borderTopColor: Colors.border,
+        elevation: 10,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: -3 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+    },
+    fixedSaveBtn: {
+        marginTop: 0,
+    },
+    phoneInputContainer: {
+        width: '100%',
+        backgroundColor: Colors.white,
+        borderWidth: 1,
+        borderColor: Colors.border,
+        borderRadius: 12,
+        height: 60,
+    },
+    phoneTextContainer: {
+        backgroundColor: Colors.white,
+        borderTopRightRadius: 12,
+        borderBottomRightRadius: 12,
+        paddingVertical: 0,
+    },
+    phoneInputText: {
+        fontSize: 16,
+        color: Colors.text,
+        height: 60,
+    },
+    phoneCodeText: {
+        fontSize: 16,
+        color: Colors.text,
+        fontWeight: '600',
     },
 });
 

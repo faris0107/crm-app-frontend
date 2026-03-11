@@ -43,16 +43,25 @@ const DashboardScreen = ({ navigation }) => {
                 });
             } else {
                 // Particular Company Stats
-                const [peopleRes, usersRes] = await Promise.all([
-                    apiClient.get('/people'),
-                    apiClient.get('/users?inactive=all')
-                ]);
+                let peopleRes;
+                let usersRes = { data: [] };
 
-                const allPeople = peopleRes.data;
-                const allUsersList = usersRes.data;
+                if (userData.role === 'L2') {
+                    // L2 don't have permission to see users list
+                    peopleRes = await apiClient.get('/people');
+                } else {
+                    [peopleRes, usersRes] = await Promise.all([
+                        apiClient.get('/people'),
+                        apiClient.get('/users?inactive=all')
+                    ]);
+                }
+
+                const allPeople = peopleRes.data?.people || (Array.isArray(peopleRes.data) ? peopleRes.data : []);
+                const totalPeopleCount = peopleRes.data?.pagination?.total ?? allPeople.length;
+                const allUsersList = usersRes.data || [];
 
                 let filteredPeople = allPeople;
-                let filteredTeam = allUsersList;
+                let filteredTeam = [];
 
                 if (userData.role === 'L2') {
                     // L2 Supervisors only see their OWN contacts
@@ -78,7 +87,7 @@ const DashboardScreen = ({ navigation }) => {
                 }
 
                 setStats({
-                    total: filteredPeople.length,
+                    total: totalPeopleCount,
                     assigned: allPeople.filter(p => p.assigned_to === userData.id).length,
                     users: filteredTeam.length
                 });
@@ -176,7 +185,7 @@ const DashboardScreen = ({ navigation }) => {
                         </>
                     ) : (
                         <>
-                            {(user?.role === 'SUPERADMIN' || user?.role === 'ADMIN' || isSuperAdmin) ? (
+                            {(user?.role === 'SUPERADMIN' || user?.role === 'ADMIN' || user?.role === 'L1' || isSuperAdmin) ? (
                                 <>
                                     <StatCard
                                         title="Total Team"
@@ -264,7 +273,7 @@ const DashboardScreen = ({ navigation }) => {
                         </>
                     ) : (
                         <>
-                            {(user?.role === 'SUPERADMIN' || user?.role === 'ADMIN' || isSuperAdmin) ? (
+                            {(user?.role === 'SUPERADMIN' || user?.role === 'ADMIN' || user?.role === 'L1' || isSuperAdmin) ? (
                                 <>
                                     <TouchableOpacity
                                         style={styles.actionCard}

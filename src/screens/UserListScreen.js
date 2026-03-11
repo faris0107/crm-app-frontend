@@ -30,6 +30,11 @@ const UserListScreen = ({ navigation }) => {
 
             const parsedUser = userDataString ? JSON.parse(userDataString) : null;
             if (!parsedUser) return;
+
+            // Normalize role to uppercase for consistent logic
+            if (parsedUser.role) {
+                parsedUser.role = parsedUser.role.toUpperCase();
+            }
             setCurrentUser(parsedUser);
 
             const cleanActiveComp = (activeCompString === 'null' || !activeCompString) ? null : activeCompString;
@@ -127,9 +132,16 @@ const UserListScreen = ({ navigation }) => {
             const rawData = response.data;
             let finalUsers = Array.isArray(rawData) ? rawData : (rawData.users || rawData.data || []);
 
-            // Safety filter for top level: Only ADMINs
+            // Safety filter for top level
             if (parentTrace.length === 0 && !showDeleted) {
-                finalUsers = finalUsers.filter(u => u.Role?.name === 'ADMIN');
+                const userRole = parsedUser?.role?.toUpperCase();
+                if (userRole === 'ADMIN') {
+                    finalUsers = finalUsers.filter(u => u.Role?.name?.toUpperCase() === 'L1');
+                } else if (userRole === 'L1') {
+                    finalUsers = finalUsers.filter(u => u.Role?.name?.toUpperCase() === 'L2');
+                } else if (!parsedUser?.entity_id && !activeCompanyId) {
+                    finalUsers = finalUsers.filter(u => u.Role?.name?.toUpperCase() === 'ADMIN');
+                }
             }
 
             setUsers(finalUsers);
@@ -231,7 +243,7 @@ const UserListScreen = ({ navigation }) => {
                                 <Icon name="edit-2" size={18} color={Colors.primary} />
                             </TouchableOpacity>
 
-                            {currentUser?.id !== item.id && currentUser?.role !== 'L1' && currentUser?.role !== 'L2' && (
+                            {currentUser?.id !== item.id && currentUser?.role?.toUpperCase() !== 'L1' && currentUser?.role?.toUpperCase() !== 'L2' && (
                                 <TouchableOpacity
                                     onPress={() => handleDelete(item.id)}
                                     style={styles.deleteBtn}
@@ -313,14 +325,17 @@ const UserListScreen = ({ navigation }) => {
 
     const getHeaderTitle = () => {
         if (showDeleted) return 'Recycle Bin';
+        const userRole = currentUser?.role?.toUpperCase();
         if (parentTrace.length === 0) {
-            if (currentUser?.role === 'ADMIN') return 'My Staff';
+            if (userRole === 'ADMIN') return 'L1 Managers';
+            if (userRole === 'L1') return 'L2 Supervisors';
             return (currentUser?.entity_id || activeCompanyId) ? 'Company Admins' : 'System Users';
         }
         const last = parentTrace[parentTrace.length - 1];
-        if (last.role === 'ADMIN') return `${last.name}'s L1 Managers`;
-        if (last.role === 'L1') return `${last.name}'s L2 Supervisors`;
-        if (last.role === 'L2') return `${last.name}'s Contacts`;
+        const lastRole = last.role?.toUpperCase();
+        if (lastRole === 'ADMIN') return `L1s of ${last.name}`;
+        if (lastRole === 'L1') return `L2s of ${last.name}`;
+        if (lastRole === 'L2') return `${last.name}'s Contacts`;
         return 'Team Members';
     };
 
@@ -403,7 +418,7 @@ const UserListScreen = ({ navigation }) => {
                     ListEmptyComponent={
                         <View style={styles.emptyContainer}>
                             <Icon name="users" size={48} color={Colors.border} />
-                            <Text style={styles.emptyText}>No users found at this level</Text>
+                            <Text style={styles.emptyText}>No members found at this level</Text>
                         </View>
                     }
                 />
