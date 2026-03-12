@@ -371,7 +371,21 @@ const UserListScreen = ({ navigation }) => {
                         </TouchableOpacity>
                     )}
                     {!showDeleted && (!currentUser?.entity_id ? !!activeCompanyId : true) && (
-                        <TouchableOpacity onPress={() => navigation.navigate('AddUser')} style={styles.addBtn}>
+                        <TouchableOpacity
+                            onPress={() => {
+                                const currentParent = parentTrace[parentTrace.length - 1];
+                                const params = {};
+                                if (currentParent) {
+                                    params.preFill = {
+                                        parent_id: currentParent.id,
+                                        entity_id: currentParent.entityId,
+                                        roleName: currentParent.role === 'ADMIN' ? 'L1' : (currentParent.role === 'L1' ? 'L2' : null)
+                                    };
+                                }
+                                navigation.navigate('AddUser', params);
+                            }}
+                            style={styles.addBtn}
+                        >
                             <Icon name="plus-circle" size={24} color={Colors.primary} />
                         </TouchableOpacity>
                     )}

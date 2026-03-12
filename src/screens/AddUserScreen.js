@@ -58,23 +58,47 @@ const AddUserScreen = ({ navigation, route }) => {
                         !parsed.entity_id ? apiClient.get('/companies') : Promise.resolve({ data: [] })
                     ]);
 
-                    setRoles(roleRes.data);
+                    const rolesList = roleRes.data;
+                    setRoles(rolesList);
                     if (!parsed.entity_id) setCompanies(compRes.data);
 
-                    // If user is Admin, they are the parent for any staff they create
-                    if (parsed.role === 'ADMIN') {
+                    // --- Pre-fill logic ---
+                    const preFill = route.params?.preFill;
+                    if (preFill) {
+                        const targetRole = rolesList.find(r => r.name === preFill.roleName);
+                        setFormData(prev => ({
+                            ...prev,
+                            entity_id: preFill.entity_id || prev.entity_id,
+                            parent_id: preFill.parent_id || prev.parent_id,
+                            role_id: targetRole ? targetRole.id : prev.role_id
+                        }));
+
+                        if (preFill.roleName === 'L2') {
+                            // Find the L1's parent (the Admin) to set selectedAdminId
+                            try {
+                                const l1UserRes = await apiClient.get(`/users/${preFill.parent_id}`);
+                                const l1User = l1UserRes.data;
+                                if (l1User && l1User.parent_id) {
+                                    setSelectedAdminId(l1User.parent_id);
+                                }
+                            } catch (e) {
+                                console.log('Failed to fetch L1 parent', e);
+                            }
+                        }
+                    } else if (parsed.role === 'ADMIN') {
+                        // If user is Admin, they are the parent for any staff they create
                         setAdmins([parsed]);
                         setFormData(prev => ({ ...prev, parent_id: parsed.id }));
                     }
 
-                    // Default role logic
-                    if (!editUser && !formData.role_id) {
+                    // Default role logic if not pre-filled
+                    if (!editUser && !preFill && !formData.role_id) {
                         let defaultRoleName = 'L1';
                         if (parsed.role === 'L1') defaultRoleName = 'L2';
-                        if (parsed.role === 'L2') defaultRoleName = 'USER'; // Though L2s shouldn't usually create users
+                        if (parsed.role === 'L2') defaultRoleName = 'USER';
                         if (!parsed.entity_id) defaultRoleName = 'ADMIN';
 
-                        const defaultRole = roleRes.data.find(r => r.name === defaultRoleName);
+                        const defaultRole = rolesList.find(r => r.name === defaultRoleName);
                         if (defaultRole) setFormData(prev => ({ ...prev, role_id: defaultRole.id }));
                     }
                 } catch (error) {
