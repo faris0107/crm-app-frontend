@@ -1,9 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, ActivityIndicator, RefreshControl, ScrollView } from 'react-native';
-import { Colors } from '../theme/Colors';
+import { Platform, Modal, Alert, ActivityIndicator, View, Text, StyleSheet, FlatList, TouchableOpacity, TextInput, RefreshControl, ScrollView } from 'react-native';
+import MIcon from 'react-native-vector-icons/MaterialCommunityIcons';
+import Icon from 'react-native-vector-icons/Feather';
+import * as Keychain from 'react-native-keychain';
+import DocumentPicker from 'react-native-document-picker';
+import ReactNativeBlobUtil from 'react-native-blob-util';
+import Share from 'react-native-share';
 import apiClient from '../api/client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Icon from 'react-native-vector-icons/Feather';
+import { Colors } from '../theme/Colors';
 
 const PeopleListScreen = ({ route, navigation }) => {
     const filterType = route?.params?.filter;
@@ -37,6 +42,102 @@ const PeopleListScreen = ({ route, navigation }) => {
     const [hasMore, setHasMore] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
     const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [isExporting, setIsExporting] = useState(false);
+    const [isImporting, setIsImporting] = useState(false);
+    const [showExcelModal, setShowExcelModal] = useState(false);
+
+    const handleDownloadTemplate = async () => {
+        setIsExporting(true);
+        try {
+            const credentials = await Keychain.getGenericPassword({ service: 'accessToken' });
+            const token = credentials ? credentials.password : null;
+            const activeCompId = await AsyncStorage.getItem('activeCompanyId');
+
+            const { config, fs } = ReactNativeBlobUtil;
+            const date = new Date();
+            const fileName = `contacts_template_${Math.floor(date.getTime() / 1000)}.xlsx`;
+            const tempPath = `${fs.dirs.CacheDir}/${fileName}`;
+
+            const res = await config({
+                fileCache: true,
+                path: tempPath,
+            }).fetch('GET', `${apiClient.defaults.baseURL}/people/download-template`, {
+                'Authorization': token ? `Bearer ${token}` : '',
+                'X-Company-Context': activeCompId || '',
+                'ngrok-skip-browser-warning': 'true'
+            });
+
+            // Check if we actually got a file (the binary PK... indicates an Excel file)
+            const path = res.path();
+            if (await fs.exists(path)) {
+                if (Platform.OS === 'android') {
+                    const downloadDir = fs.dirs.DownloadDir;
+                    const finalPath = `${downloadDir}/${fileName}`;
+                    
+                    // Move the file to public downloads
+                    await fs.cp(path, finalPath);
+                    
+                    // Make it visible to the system immediately
+                    await fs.scanFile([{ 
+                        path: finalPath, 
+                        mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' 
+                    }]);
+                    
+                    Alert.alert('Download Complete', `Template saved to your Downloads folder as:\n${fileName}`);
+                } else {
+                    // iOS standard sharing
+                    await Share.open({
+                        url: path,
+                        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        title: 'Save Template',
+                    });
+                }
+                setShowExcelModal(false);
+            } else {
+                throw new Error('File was not saved correctly');
+            }
+        } catch (error) {
+            console.error('Download template error:', error);
+            Alert.alert('Error', 'Could not complete the download. Please check your internet connection and try again.');
+        } finally {
+            setIsExporting(false);
+        }
+    };
+
+    const handleUploadExcel = async () => {
+        try {
+            const res = await DocumentPicker.pick({
+                type: [DocumentPicker.types.xlsx],
+            });
+
+            setIsImporting(true);
+            const formData = new FormData();
+            formData.append('file', {
+                uri: res[0].uri,
+                type: res[0].type || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                name: res[0].name || 'contacts.xlsx',
+            });
+
+            const uploadRes = await apiClient.post('/people/bulk-upload', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
+
+            Alert.alert('Import Success', uploadRes.data.message);
+            setShowExcelModal(false);
+            fetchPeople(1, true); // Refresh list
+        } catch (err) {
+            if (DocumentPicker.isCancel(err)) {
+                // User cancelled the picker
+            } else {
+                console.error('Upload error:', err);
+                Alert.alert('Import Error', err.response?.data?.message || 'Failed to upload contacts');
+            }
+        } finally {
+            setIsImporting(false);
+        }
+    };
 
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -229,6 +330,15 @@ const PeopleListScreen = ({ route, navigation }) => {
                                 {assigneeName}
                             </Text>
                         </View>
+                        {item.tags && Array.isArray(item.tags) && item.tags.length > 0 && (
+                            <View style={styles.tagsRow}>
+                                {item.tags.map((tag, idx) => (
+                                    <View key={idx} style={styles.tagChip}>
+                                        <Text style={styles.tagChipText}>{tag}</Text>
+                                    </View>
+                                ))}
+                            </View>
+                        )}
                     </View>
                     <View style={styles.badgeContainer}>
                         <View style={[styles.statusBadge, { backgroundColor: (item.Status?.color || Colors.border) + '20' }]}>
@@ -264,6 +374,14 @@ const PeopleListScreen = ({ route, navigation }) => {
                     <Text style={[styles.title, parentStaff && { fontSize: 20 }]}>{getHeaderTitle()}</Text>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {(currentUser?.role === 'ADMIN' || currentUser?.role === 'L1' || (!currentUser?.entity_id && (activeCompanyId || parentStaff?.entityId))) && (
+                        <TouchableOpacity
+                            onPress={() => setShowExcelModal(true)}
+                            style={{ marginRight: 15 }}
+                        >
+                            <MIcon name="file-excel" size={26} color={Colors.success} />
+                        </TouchableOpacity>
+                    )}
                     <TouchableOpacity
                         onPress={() => setShowFilters(!showFilters)}
                         style={{ marginRight: 15 }}
@@ -463,6 +581,66 @@ const PeopleListScreen = ({ route, navigation }) => {
                     }
                 />
             )}
+
+            {/* Excel Actions Modal */}
+            <Modal
+                visible={showExcelModal}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowExcelModal(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={styles.excelModalContent}>
+                        <View style={styles.modalHeader}>
+                            <Text style={styles.modalTitle}>Excel Import/Export</Text>
+                            <TouchableOpacity onPress={() => setShowExcelModal(false)}>
+                                <Icon name="x" size={24} color={Colors.text} />
+                            </TouchableOpacity>
+                        </View>
+
+                        <Text style={styles.modalDesc}>
+                            Manage your contacts efficiently by using Excel files. You can download the template and upload it back with your data.
+                        </Text>
+
+                        <TouchableOpacity
+                            style={[styles.modalBtn, { backgroundColor: Colors.primary + '15' }]}
+                            onPress={handleDownloadTemplate}
+                            disabled={isExporting}
+                        >
+                            <View style={styles.modalBtnIcon}>
+                                <Icon name="download" size={20} color={Colors.primary} />
+                            </View>
+                            <View>
+                                <Text style={[styles.modalBtnTitle, { color: Colors.primary }]}>Download Template</Text>
+                                <Text style={styles.modalBtnSub}>Get the latest Excel format</Text>
+                            </View>
+                            {isExporting && <ActivityIndicator size="small" color={Colors.primary} style={{ marginLeft: 'auto' }} />}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                            style={[styles.modalBtn, { backgroundColor: Colors.success + '15' }]}
+                            onPress={handleUploadExcel}
+                            disabled={isImporting}
+                        >
+                            <View style={styles.modalBtnIcon}>
+                                <Icon name="upload" size={20} color={Colors.success} />
+                            </View>
+                            <View>
+                                <Text style={[styles.modalBtnTitle, { color: Colors.success }]}>Upload Excel File</Text>
+                                <Text style={styles.modalBtnSub}>Import contacts from your device</Text>
+                            </View>
+                            {isImporting && <ActivityIndicator size="small" color={Colors.success} style={{ marginLeft: 'auto' }} />}
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                            style={styles.closeModalBtn}
+                            onPress={() => setShowExcelModal(false)}
+                        >
+                            <Text style={styles.closeModalBtnText}>Done</Text>
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            </Modal>
         </View>
     );
 };
@@ -613,6 +791,108 @@ const styles = StyleSheet.create({
         textAlign: 'center',
         marginTop: 40,
         color: Colors.textLight,
+    },
+    sectionTitle: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: Colors.text,
+        marginLeft: 4,
+    },
+    excelBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: 16,
+        paddingVertical: 10,
+        borderRadius: 12,
+        marginRight: 12,
+    },
+    excelBtnText: {
+        fontSize: 13,
+        fontWeight: '700',
+    },
+    modalOverlay: {
+        flex: 1,
+        backgroundColor: 'rgba(0,0,0,0.5)',
+        justifyContent: 'flex-end',
+    },
+    excelModalContent: {
+        backgroundColor: Colors.white,
+        borderTopLeftRadius: 24,
+        borderTopRightRadius: 24,
+        padding: 24,
+        paddingBottom: 40,
+    },
+    modalHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 16,
+    },
+    modalTitle: {
+        fontSize: 20,
+        fontWeight: '800',
+        color: Colors.text,
+    },
+    modalDesc: {
+        fontSize: 14,
+        color: Colors.textLight,
+        marginBottom: 24,
+        lineHeight: 20,
+    },
+    modalBtn: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        padding: 16,
+        borderRadius: 16,
+        marginBottom: 16,
+    },
+    modalBtnIcon: {
+        width: 44,
+        height: 44,
+        borderRadius: 12,
+        backgroundColor: Colors.white,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginRight: 16,
+    },
+    modalBtnTitle: {
+        fontSize: 16,
+        fontWeight: '700',
+    },
+    modalBtnSub: {
+        fontSize: 12,
+        color: Colors.textLight,
+        marginTop: 2,
+    },
+    closeModalBtn: {
+        marginTop: 8,
+        padding: 16,
+        alignItems: 'center',
+    },
+    closeModalBtnText: {
+        fontSize: 16,
+        fontWeight: '700',
+        color: Colors.textLight,
+    },
+    tagsRow: {
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        marginTop: 6,
+    },
+    tagChip: {
+        backgroundColor: Colors.background,
+        paddingHorizontal: 8,
+        paddingVertical: 2,
+        borderRadius: 6,
+        marginRight: 6,
+        marginBottom: 4,
+        borderWidth: 0.5,
+        borderColor: Colors.border,
+    },
+    tagChipText: {
+        fontSize: 11,
+        color: Colors.textLight,
+        fontWeight: '500',
     },
 });
 

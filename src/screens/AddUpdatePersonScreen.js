@@ -12,6 +12,22 @@ import { TextInput, Platform } from 'react-native';
 import PhoneInput from 'react-native-phone-number-input';
 import { useRef } from 'react';
 
+const parseTags = (tags) => {
+    if (!tags) return [];
+    if (Array.isArray(tags)) return tags;
+    if (typeof tags === 'string') {
+        try {
+            // Handle both valid JSON and single-quoted "JSON" like strings
+            const parsed = JSON.parse(tags.replace(/'/g, '"'));
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            // If it's a plain string like "tag1, tag2", split it or return as single item
+            return tags.split(',').map(t => t.trim()).filter(t => t !== '');
+        }
+    }
+    return [];
+};
+
 const AddUpdatePersonScreen = ({ route, navigation }) => {
     const person = route.params?.person;
     const parentStaff = route.params?.parentStaff;
@@ -23,7 +39,7 @@ const AddUpdatePersonScreen = ({ route, navigation }) => {
         text_id: person?.text_id || '',
         mobile: person?.mobile || '',
         status_id: person?.status_id || '',
-        tags: Array.isArray(person?.tags) ? person.tags : [],
+        tags: parseTags(person?.tags),
         assigned_to: person?.assigned_to || parentStaff?.id || '',
         referred_by: person?.referred_by || '',
     });
