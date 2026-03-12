@@ -70,10 +70,12 @@ const LoginScreen = ({ navigation }) => {
         setLoading(true);
         try {
             await GoogleSignin.hasPlayServices();
+            await GoogleSignin.signOut(); // Force clear previous session to show account picker
             const userInfo = await GoogleSignin.signIn();
-            const idToken = userInfo.idToken;
+            const idToken = userInfo.data ? userInfo.data.idToken : userInfo.idToken;
 
             if (!idToken) {
+                console.log('Google Sign-In response structure:', JSON.stringify(userInfo));
                 throw new Error('Google Sign-In failed: No ID Token received');
             }
 
@@ -88,7 +90,7 @@ const LoginScreen = ({ navigation }) => {
 
             navigation.replace('Dashboard');
         } catch (error) {
-            let errorMsg = error.message || 'Google login failed';
+            let errorMsg = error.response?.data?.message || error.message || 'Google login failed';
             if (error.code === statusCodes.SIGN_IN_CANCELLED) {
                 return;
             } else if (error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
