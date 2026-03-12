@@ -10,7 +10,7 @@ import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-si
 import AppConfirmModal from '../components/AppConfirmModal';
 
 // Replace with your Web Client ID from Google Cloud Console
-const GOOGLE_WEB_CLIENT_ID = '84393753692-1fnju8k6at720ooom9ke3bqkiq4hq68k.apps.googleusercontent.com';
+const GOOGLE_WEB_CLIENT_ID = '84393753692-23ussfo15feh1nmpflkq2357348l3rid.apps.googleusercontent.com';
 
 const LoginScreen = ({ navigation }) => {
     const [email, setEmail] = useState('');
