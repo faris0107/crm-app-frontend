@@ -115,6 +115,7 @@ const PeopleListScreen = ({ route, navigation }) => {
             }
         } catch (error) {
             console.error('Fetch People Error:', error);
+            setHasMore(false); // Stop loading more on error to prevent loops
         } finally {
             setLoading(false);
             setRefreshing(false);
