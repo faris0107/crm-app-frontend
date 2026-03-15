@@ -359,7 +359,7 @@ const PeopleListScreen = ({ route, navigation }) => {
 
     const getHeaderTitle = () => {
         if (parentStaff) return `${parentStaff.name}'s Contacts`;
-        return (!currentUser?.entity_id && !activeCompanyId) ? 'Global Contacts' : 'Company Contacts';
+        return (!currentUser?.entity_id && !activeCompanyId) ? 'Global Contacts' : 'Contacts';
     };
 
     return (

@@ -329,7 +329,7 @@ const UserListScreen = ({ navigation }) => {
         if (parentTrace.length === 0) {
             if (userRole === 'ADMIN') return 'L1 Managers';
             if (userRole === 'L1') return 'L2 Supervisors';
-            return (currentUser?.entity_id || activeCompanyId) ? 'Company Admins' : 'System Users';
+            return (currentUser?.entity_id || activeCompanyId) ? 'Admins' : 'Users';
         }
         const last = parentTrace[parentTrace.length - 1];
         const lastRole = last.role?.toUpperCase();
